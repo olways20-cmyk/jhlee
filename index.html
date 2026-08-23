@@ -97,8 +97,14 @@
     letter-spacing:.02em; margin-bottom:6px;
   }
 
-  .cal-head{ display:flex; align-items:baseline; justify-content:space-between; margin-bottom:14px; }
+  .cal-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; gap:8px; }
   .cal-title{ font-size:16px; font-weight:700; }
+  .cal-nav{
+    width:28px; height:28px; border-radius:50%; border:none; background:transparent;
+    color:var(--text-secondary); cursor:pointer; font-size:18px; line-height:1;
+    display:flex; align-items:center; justify-content:center; flex:none;
+  }
+  .cal-nav:hover{ background:var(--hover); color:var(--text); }
   .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:5px; text-align:center; }
   .cal-wd{ font-size:12px; color:var(--text-faint); padding-bottom:6px; font-weight:500; }
   .cal-day{
@@ -110,6 +116,8 @@
   .cal-day:hover{ background:var(--hover); }
   .cal-day.blank{ visibility:hidden; cursor:default; }
   .cal-day.today{ background:var(--accent); color:#fff; font-weight:700; }
+  .cal-day.sat:not(.today){ color:var(--blue); }
+  .cal-day.sun:not(.today), .cal-day.holiday:not(.today){ color:var(--red); }
   .cal-day.has-event:not(.today)::after{
     content:""; position:absolute; bottom:5px; left:50%; transform:translateX(-50%);
     width:5px; height:5px; border-radius:50%; background:var(--accent);
@@ -128,6 +136,24 @@
     box-shadow:var(--shadow-hover); z-index:30; pointer-events:none;
     line-height:1.4;
   }
+
+  /* ================= Year calendar ================= */
+  .year-card{ margin-bottom:24px; }
+  .year-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-top:14px; }
+  @media (max-width:900px){ .year-grid{ grid-template-columns:repeat(3,1fr); } }
+  @media (max-width:600px){ .year-grid{ grid-template-columns:repeat(2,1fr); } }
+  .mini-month-title{ font-size:12.5px; font-weight:700; color:var(--text-secondary); margin-bottom:6px; }
+  .mini-cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:2px; text-align:center; }
+  .mini-wd{ font-size:9px; color:var(--text-faint); padding-bottom:2px; }
+  .mini-day{
+    font-family:"Roboto Mono",monospace; font-size:10.5px; padding:3px 0; border-radius:4px;
+    border:none; background:transparent; color:var(--text-secondary); cursor:pointer;
+  }
+  .mini-day:hover{ background:var(--hover); }
+  .mini-day.blank{ visibility:hidden; cursor:default; }
+  .mini-day.today{ background:var(--accent); color:#fff; font-weight:700; }
+  .mini-day.sat:not(.today){ color:var(--blue); }
+  .mini-day.sun:not(.today), .mini-day.holiday:not(.today){ color:var(--red); }
 
   .overdue-card{
     background:var(--red-tint); border-color:transparent; margin-bottom:24px;
@@ -277,6 +303,11 @@
 
   <div class="page">
 
+    <section class="card year-card">
+      <div class="cal-head"><span class="cal-title" id="yearTitle">이번 해</span></div>
+      <div class="year-grid" id="yearGrid"></div>
+    </section>
+
     <div class="top-grid">
       <section class="card">
         <div class="today-clock" id="liveClock">--:--</div>
@@ -290,7 +321,11 @@
       </section>
 
       <section class="card">
-        <div class="cal-head"><span class="cal-title" id="calTitle">이번 달</span></div>
+        <div class="cal-head">
+          <button type="button" class="cal-nav" id="calPrev" aria-label="이전 달">‹</button>
+          <span class="cal-title" id="calTitle">이번 달</span>
+          <button type="button" class="cal-nav" id="calNext" aria-label="다음 달">›</button>
+        </div>
         <div class="cal-grid" id="calGrid"></div>
       </section>
     </div>
@@ -389,6 +424,31 @@
   var dataStore = document.getElementById('dataStore');
   var selectedDate = null;
   var STORAGE_KEY = 'jhlee_desk_v1';
+
+  /* ---------- Korean public holidays (fixed + lunar-based, looked up per year) ---------- */
+  var HOLIDAYS = {
+    "2025-01-01":"신정","2025-01-28":"설날연휴","2025-01-29":"설날","2025-01-30":"설날연휴",
+    "2025-03-01":"삼일절","2025-03-03":"대체공휴일",
+    "2025-05-05":"어린이날","2025-05-08":"부처님오신날",
+    "2025-06-06":"현충일","2025-08-15":"광복절","2025-10-03":"개천절",
+    "2025-10-05":"추석연휴","2025-10-06":"추석","2025-10-07":"추석연휴",
+    "2025-10-09":"한글날","2025-12-25":"크리스마스",
+
+    "2026-01-01":"신정","2026-02-16":"설날연휴","2026-02-17":"설날","2026-02-18":"설날연휴",
+    "2026-03-01":"삼일절","2026-03-02":"대체공휴일",
+    "2026-05-05":"어린이날","2026-05-08":"부처님오신날",
+    "2026-06-06":"현충일","2026-08-15":"광복절","2026-08-17":"대체공휴일",
+    "2026-09-24":"추석연휴","2026-09-25":"추석","2026-09-26":"추석연휴","2026-09-27":"대체공휴일",
+    "2026-10-03":"개천절","2026-10-05":"대체공휴일","2026-10-09":"한글날","2026-12-25":"크리스마스",
+
+    "2027-01-01":"신정","2027-03-01":"삼일절","2027-05-05":"어린이날","2027-05-13":"부처님오신날",
+    "2027-06-06":"현충일","2027-08-15":"광복절","2027-10-03":"개천절","2027-10-09":"한글날","2027-12-25":"크리스마스"
+  };
+  function isHoliday(iso){ return Object.prototype.hasOwnProperty.call(HOLIDAYS, iso); }
+
+  var now0 = new Date();
+  var viewYear = now0.getFullYear();
+  var viewMonth = now0.getMonth();
 
   function pad(n){ return String(n).padStart(2,'0'); }
   function toISO(d){ return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()); }
@@ -508,8 +568,7 @@
   }
 
   function renderCalendar(items){
-    var now = new Date();
-    var y = now.getFullYear(), m = now.getMonth();
+    var y = viewYear, m = viewMonth;
     document.getElementById('calTitle').textContent = y+'년 '+(m+1)+'월';
     var grid = document.getElementById('calGrid');
     grid.innerHTML = '';
@@ -521,23 +580,79 @@
 
     var firstDow = new Date(y,m,1).getDay();
     var lastDate = new Date(y,m+1,0).getDate();
-    var todayIso = toISO(now);
+    var todayIso = toISO(new Date());
 
     for(var i=0;i<firstDow;i++){
       var blank = document.createElement('div'); blank.className = 'cal-day blank'; grid.appendChild(blank);
     }
     for(var d=1; d<=lastDate; d++){
       var iso = y+'-'+pad(m+1)+'-'+pad(d);
+      var dow = new Date(y,m,d).getDay();
       var cell = document.createElement('button');
       cell.type = 'button';
-      cell.className = 'cal-day' + (iso===todayIso?' today':'') + (byDate[iso]?' has-event':'');
+      var cls = 'cal-day';
+      if(iso===todayIso) cls += ' today';
+      if(byDate[iso]) cls += ' has-event';
+      if(dow===6) cls += ' sat';
+      if(dow===0) cls += ' sun';
+      if(isHoliday(iso)) cls += ' holiday';
+      cell.className = cls;
       cell.textContent = d;
       cell.dataset.date = iso;
+      var previewParts = [];
+      if(isHoliday(iso)) previewParts.push('🔴 ' + HOLIDAYS[iso]);
       if(byDate[iso]){
-        var preview = byDate[iso].map(function(it){ return (it.done?'✓ ':'') + (it.title || '(제목 없음)'); }).join(' · ');
-        cell.setAttribute('data-preview', preview);
+        byDate[iso].forEach(function(it){ previewParts.push((it.done?'✓ ':'') + (it.title || '(제목 없음)')); });
       }
+      if(previewParts.length) cell.setAttribute('data-preview', previewParts.join(' · '));
       grid.appendChild(cell);
+    }
+  }
+
+  function renderYearCalendar(){
+    var now = new Date();
+    var y = now.getFullYear();
+    document.getElementById('yearTitle').textContent = y + '년';
+    var todayIso = toISO(now);
+    var grid = document.getElementById('yearGrid');
+    grid.innerHTML = '';
+    for(var m=0; m<12; m++){
+      var monthWrap = document.createElement('div');
+      monthWrap.className = 'mini-month';
+      var title = document.createElement('div');
+      title.className = 'mini-month-title';
+      title.textContent = (m+1) + '월';
+      monthWrap.appendChild(title);
+
+      var mgrid = document.createElement('div');
+      mgrid.className = 'mini-cal-grid';
+      WD_KOR.forEach(function(w){
+        var el = document.createElement('div'); el.className = 'mini-wd'; el.textContent = w; mgrid.appendChild(el);
+      });
+
+      var firstDow = new Date(y,m,1).getDay();
+      var lastDate = new Date(y,m+1,0).getDate();
+      for(var i=0;i<firstDow;i++){
+        var blank = document.createElement('div'); blank.className = 'mini-day blank'; mgrid.appendChild(blank);
+      }
+      for(var d=1; d<=lastDate; d++){
+        var iso = y+'-'+pad(m+1)+'-'+pad(d);
+        var dow = new Date(y,m,d).getDay();
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        var cls = 'mini-day';
+        if(iso===todayIso) cls += ' today';
+        if(dow===6) cls += ' sat';
+        if(dow===0) cls += ' sun';
+        if(isHoliday(iso)) cls += ' holiday';
+        btn.className = cls;
+        btn.textContent = d;
+        btn.dataset.date = iso;
+        if(isHoliday(iso)) btn.title = HOLIDAYS[iso];
+        mgrid.appendChild(btn);
+      }
+      monthWrap.appendChild(mgrid);
+      grid.appendChild(monthWrap);
     }
   }
 
@@ -597,6 +712,9 @@
     var calDay = e.target.closest('.cal-day:not(.blank)');
     if(calDay){ openDayModal(calDay.dataset.date); return; }
 
+    var miniDay = e.target.closest('.mini-day:not(.blank)');
+    if(miniDay){ openDayModal(miniDay.dataset.date); return; }
+
     if(e.target.id === 'modalClose' || e.target === document.getElementById('dayModal')){
       closeDayModal();
     }
@@ -654,9 +772,19 @@
     renderAll();
   });
 
+  document.getElementById('calPrev').addEventListener('click', function(){
+    viewMonth--; if(viewMonth < 0){ viewMonth = 11; viewYear--; }
+    renderCalendar(getItems());
+  });
+  document.getElementById('calNext').addEventListener('click', function(){
+    viewMonth++; if(viewMonth > 11){ viewMonth = 0; viewYear++; }
+    renderCalendar(getItems());
+  });
+
   document.getElementById('footYear').textContent = new Date().getFullYear();
 
   updateClock();
+  renderYearCalendar();
   renderAll();
   setInterval(updateClock, 10000);
 })();
