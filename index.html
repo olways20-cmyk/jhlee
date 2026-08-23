@@ -56,10 +56,21 @@
   input,button{ font-size:inherit; }
 
   .mini-head{
-    padding:20px 20px 8px;
-    font-size:14px; font-weight:700; color:var(--text-secondary);
-    letter-spacing:.01em;
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:16px 20px 8px; flex-wrap:wrap;
   }
+  .mini-head-title{
+    font-size:14px; font-weight:700; color:var(--text-secondary); letter-spacing:.01em;
+  }
+  .auth-area{ display:flex; align-items:center; gap:10px; }
+  .auth-status{ font-size:12px; color:var(--text-secondary); }
+  .auth-status.owner{ color:var(--green); font-weight:600; }
+  .auth-btn{
+    padding:6px 14px; border-radius:14px; border:1px solid var(--border);
+    background:var(--surface-raised); color:var(--text); font-size:12px; font-weight:600;
+    cursor:pointer; transition:border-color .12s ease, color .12s ease;
+  }
+  .auth-btn:hover{ border-color:var(--accent); color:var(--accent); }
 
   .page{ max-width:1180px; margin:0 auto; padding:12px 20px 140px; }
   .section-title{
@@ -211,6 +222,8 @@
   .task-check:checked + .task-row .task-mark{ background:var(--accent); border-color:var(--accent); }
   .task-check:checked + .task-row .task-mark::after{ opacity:1; }
   .task-check:focus-visible + .task-row .task-mark{ outline:2px solid var(--accent); outline-offset:2px; }
+  .task-check:disabled + .task-row{ cursor:default; }
+  .task-check:disabled + .task-row .task-mark{ opacity:.7; }
 
   .task-body{ flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
   .task-text{
@@ -222,8 +235,8 @@
     word-break:break-word; outline-offset:1px;
   }
   .task-detail:empty::before{ content:attr(data-placeholder); color:var(--text-faint); }
-  .task-text:hover, .task-detail:hover{ background:var(--surface); }
-  .task-text:focus, .task-detail:focus{ background:var(--surface-raised); outline:2px solid var(--accent); }
+  .task-text[contenteditable]:hover, .task-detail[contenteditable]:hover{ background:var(--surface); }
+  .task-text[contenteditable]:focus, .task-detail[contenteditable]:focus{ background:var(--surface-raised); outline:2px solid var(--accent); }
   .task-check:checked ~ .task-body .task-text{ text-decoration:line-through; color:var(--text-faint); }
 
   .task-del{
@@ -236,6 +249,7 @@
   .task-del:hover{ background:rgba(234,67,53,0.14); color:var(--red); }
 
   .add-form{ margin-top:8px; }
+  #appRoot:not(.is-owner) .add-form{ display:none; }
   .add-form input{
     width:100%; border:1px dashed var(--border); background:transparent; color:var(--text-secondary);
     border-radius:6px; padding:7px 9px; font-size:12.5px; outline:none;
@@ -299,7 +313,13 @@
 
 <div id="appRoot">
 
-  <div class="mini-head">🌿 JH's Desk</div>
+  <div class="mini-head">
+    <span class="mini-head-title">🌿 JH's Desk</span>
+    <div class="auth-area">
+      <span class="auth-status" id="authStatus">확인 중…</span>
+      <button type="button" class="auth-btn" id="authBtn">로그인</button>
+    </div>
+  </div>
 
   <div class="page">
 
@@ -408,22 +428,38 @@
     </div>
   </div>
 
-  <!-- 기본 예시 일정 (처음 방문 시, 저장된 내용이 없을 때만 사용됨) -->
-  <ul id="dataStore" style="display:none">
-    <li class="task-data" data-id="seed-1" data-date="2026-08-23" data-done="false" data-title="클릭하면 바로 수정돼요" data-detail="제목과 상세 내용 모두 편집 가능"></li>
-    <li class="task-data" data-id="seed-2" data-date="2026-08-23" data-done="true" data-title="체크하면 완료 표시" data-detail=""></li>
-    <li class="task-data" data-id="seed-3" data-date="2026-08-20" data-done="false" data-title="예시: 지난 할 일" data-detail="이렇게 상단에 모여요"></li>
-  </ul>
-
 </div>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDJHsZKNa8E-G8enjjH-ux2v9RiBKTmWB8",
+  authDomain: "jhlee-calender.firebaseapp.com",
+  projectId: "jhlee-calender",
+  storageBucket: "jhlee-calender.firebasestorage.app",
+  messagingSenderId: "900457866004",
+  appId: "1:900457866004:web:4b527c9b3fad6fe7ee9801"
+};
+const OWNER_EMAILS = ["olways20@gmail.com", "cjh8858@gmail.com"];
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const provider = new GoogleAuthProvider();
+
 (function(){
   var WD_KOR = ['일','월','화','수','목','금','토'];
   var appRoot = document.getElementById('appRoot');
-  var dataStore = document.getElementById('dataStore');
   var selectedDate = null;
-  var STORAGE_KEY = 'jhlee_desk_v1';
+  var items = [];
+  var isOwner = false;
 
   /* ---------- Korean public holidays (fixed + lunar-based, looked up per year) ---------- */
   var HOLIDAYS = {
@@ -454,58 +490,40 @@
   function toISO(d){ return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()); }
   function esc(s){ var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
-  /* ---------- localStorage load / save (this browser only) ---------- */
-  function loadFromStorage(){
-    try{
-      var raw = localStorage.getItem(STORAGE_KEY);
-      if(!raw) return null;
-      return JSON.parse(raw);
-    }catch(e){ return null; }
+  /* ---------- Firestore mutations (owner-only; also enforced server-side by security rules) ---------- */
+  function fbAdd(date, title){
+    if(!isOwner || !date || !title) return;
+    addDoc(collection(db, 'tasks'), { date: date, title: title, detail: '', done: false }).catch(function(e){ console.error(e); });
   }
-  function saveToStorage(){
-    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(getItems())); }catch(e){}
+  function fbToggle(id, done){
+    if(!isOwner) return;
+    updateDoc(doc(db, 'tasks', id), { done: done }).catch(function(e){ console.error(e); });
   }
-  (function hydrate(){
-    var stored = loadFromStorage();
-    if(!stored) return; // keep the sample items on first-ever visit
-    dataStore.innerHTML = '';
-    stored.forEach(function(it){
-      var li = document.createElement('li');
-      li.className = 'task-data';
-      li.dataset.id = it.id;
-      li.dataset.date = it.date;
-      li.dataset.done = it.done ? 'true' : 'false';
-      li.dataset.title = it.title || '';
-      li.dataset.detail = it.detail || '';
-      dataStore.appendChild(li);
-    });
-  })();
-
-  function getItems(){
-    return Array.from(dataStore.querySelectorAll('.task-data')).map(function(li){
-      return {
-        id: li.dataset.id,
-        date: li.dataset.date,
-        done: li.dataset.done === 'true',
-        title: li.dataset.title || '',
-        detail: li.dataset.detail || ''
-      };
-    });
+  function fbUpdateField(id, field, value){
+    if(!isOwner) return;
+    var patch = {}; patch[field] = value;
+    updateDoc(doc(db, 'tasks', id), patch).catch(function(e){ console.error(e); });
   }
-  function findCanonical(id){
-    return dataStore.querySelector('.task-data[data-id="'+id.replace(/"/g,'')+'"]');
+  function fbDelete(id){
+    if(!isOwner) return;
+    deleteDoc(doc(db, 'tasks', id)).catch(function(e){ console.error(e); });
   }
 
-  function itemHtml(item, ctx){
+  function itemHtml(item, ctx, prefixHtml){
+    prefixHtml = prefixHtml || '';
     var cbId = 'cb-' + item.id + '-' + ctx;
+    var editAttr = isOwner ? ' contenteditable="true"' : '';
+    var disabledAttr = isOwner ? '' : ' disabled';
+    var delBtn = isOwner ? '<button type="button" class="task-del" aria-label="삭제">×</button>' : '';
     return '<li class="task" data-id="'+item.id+'">'
-      + '<input type="checkbox" class="task-check" id="'+cbId+'" '+(item.done?'checked':'')+'>'
+      + prefixHtml
+      + '<input type="checkbox" class="task-check" id="'+cbId+'" '+(item.done?'checked':'')+disabledAttr+'>'
       + '<label for="'+cbId+'" class="task-row"><span class="task-mark"></span></label>'
       + '<div class="task-body">'
-      +   '<span class="task-text" contenteditable="true" spellcheck="false" data-field="title">'+esc(item.title)+'</span>'
-      +   '<span class="task-detail" contenteditable="true" spellcheck="false" data-field="detail" data-placeholder="상세 내용 추가">'+esc(item.detail)+'</span>'
+      +   '<span class="task-text"'+editAttr+' spellcheck="false" data-field="title">'+esc(item.title)+'</span>'
+      +   '<span class="task-detail"'+editAttr+' spellcheck="false" data-field="detail" data-placeholder="상세 내용 추가">'+esc(item.detail)+'</span>'
       + '</div>'
-      + '<button type="button" class="task-del" aria-label="삭제">×</button>'
+      + delBtn
       + '</li>';
   }
 
@@ -524,37 +542,27 @@
     document.getElementById('liveGreet').textContent = greet;
   }
 
-  function renderToday(items){
+  function renderToday(){
     var todayIso = toISO(new Date());
     var todays = items.filter(function(it){ return it.date === todayIso; });
     document.getElementById('todayList').innerHTML = todays.map(function(it){ return itemHtml(it,'td'); }).join('');
   }
 
-  function renderOverdue(items, monday){
+  function renderOverdue(monday){
     var mondayIso = toISO(monday);
     var overdue = items.filter(function(it){ return it.date < mondayIso && !it.done; });
     var bar = document.getElementById('overdueBar');
     if(!overdue.length){ bar.style.display = 'none'; document.getElementById('overdueList').innerHTML=''; return; }
     bar.style.display = 'block';
-    overdue.sort(function(a,b){ return a.date < b.date ? -1 : 1; });
+    overdue = overdue.slice().sort(function(a,b){ return a.date < b.date ? -1 : 1; });
     document.getElementById('overdueList').innerHTML = overdue.map(function(it){
       var d = new Date(it.date+'T00:00:00');
-      var tag = (d.getMonth()+1)+'/'+d.getDate()+'('+WD_KOR[d.getDay()]+')';
-      var cbId = 'cb-'+it.id+'-od';
-      return '<li class="task" data-id="'+it.id+'">'
-        + '<span class="overdue-tag">'+tag+'</span>'
-        + '<input type="checkbox" class="task-check" id="'+cbId+'">'
-        + '<label for="'+cbId+'" class="task-row"><span class="task-mark"></span></label>'
-        + '<div class="task-body">'
-        +   '<span class="task-text" contenteditable="true" spellcheck="false" data-field="title">'+esc(it.title)+'</span>'
-        +   '<span class="task-detail" contenteditable="true" spellcheck="false" data-field="detail" data-placeholder="상세 내용 추가">'+esc(it.detail)+'</span>'
-        + '</div>'
-        + '<button type="button" class="task-del" aria-label="삭제">×</button>'
-        + '</li>';
+      var tag = '<span class="overdue-tag">' + (d.getMonth()+1)+'/'+d.getDate()+'('+WD_KOR[d.getDay()]+')' + '</span>';
+      return itemHtml(it, 'od', tag);
     }).join('');
   }
 
-  function renderWeek(items, monday){
+  function renderWeek(monday){
     for(var i=0;i<7;i++){
       var col = document.querySelector('.day-col[data-day-idx="'+i+'"]');
       var d = new Date(monday); d.setDate(monday.getDate()+i);
@@ -567,7 +575,7 @@
     }
   }
 
-  function renderCalendar(items){
+  function renderCalendar(){
     var y = viewYear, m = viewMonth;
     document.getElementById('calTitle').textContent = y+'년 '+(m+1)+'월';
     var grid = document.getElementById('calGrid');
@@ -669,22 +677,20 @@
   }
   function renderModalList(){
     if(!selectedDate) return;
-    var items = getItems().filter(function(it){ return it.date === selectedDate; });
-    document.getElementById('modalList').innerHTML = items.map(function(it){ return itemHtml(it,'md'); }).join('');
+    var dayItems = items.filter(function(it){ return it.date === selectedDate; });
+    document.getElementById('modalList').innerHTML = dayItems.map(function(it){ return itemHtml(it,'md'); }).join('');
   }
 
   function renderAll(){
-    saveToStorage();
-    var items = getItems();
     var now = new Date();
     var mondayOffset = (now.getDay()+6)%7;
     var monday = new Date(now); monday.setDate(now.getDate()-mondayOffset);
     var weekEnd = new Date(monday); weekEnd.setDate(monday.getDate()+6);
 
-    renderToday(items);
-    renderOverdue(items, monday);
-    renderWeek(items, monday);
-    renderCalendar(items);
+    renderToday();
+    renderOverdue(monday);
+    renderWeek(monday);
+    renderCalendar();
     renderModalList();
 
     document.getElementById('weekTitle').textContent =
@@ -694,9 +700,7 @@
   appRoot.addEventListener('change', function(e){
     if(e.target.classList.contains('task-check')){
       var li = e.target.closest('[data-id]');
-      var canon = findCanonical(li.dataset.id);
-      if(canon) canon.dataset.done = e.target.checked ? 'true' : 'false';
-      renderAll();
+      fbToggle(li.dataset.id, e.target.checked);
     }
   });
 
@@ -704,9 +708,7 @@
     var del = e.target.closest('.task-del');
     if(del){
       var li = del.closest('[data-id]');
-      var canon = findCanonical(li.dataset.id);
-      if(canon) canon.remove();
-      renderAll();
+      fbDelete(li.dataset.id);
       return;
     }
     var calDay = e.target.closest('.cal-day:not(.blank)');
@@ -722,18 +724,15 @@
 
   appRoot.addEventListener('focusout', function(e){
     var field = e.target.dataset ? e.target.dataset.field : null;
-    if(!field) return;
+    if(!field || !isOwner) return;
     var li = e.target.closest('[data-id]');
-    var canon = findCanonical(li.dataset.id);
-    if(!canon) return;
     var val = e.target.textContent.trim();
     if(field === 'title'){
-      if(!val){ canon.remove(); renderAll(); return; }
-      canon.dataset.title = val;
+      if(!val){ fbDelete(li.dataset.id); return; }
+      fbUpdateField(li.dataset.id, 'title', val);
     } else if(field === 'detail'){
-      canon.dataset.detail = val;
+      fbUpdateField(li.dataset.id, 'detail', val);
     }
-    renderAll();
   });
 
   appRoot.addEventListener('keydown', function(e){
@@ -757,31 +756,72 @@
     else if(ctx === 'modal') date = selectedDate;
     else if(ctx === 'week') date = form.closest('.day-col').dataset.date;
     if(!date) return;
-
-    var id = 't-' + Date.now() + '-' + Math.floor(Math.random()*10000);
-    var canon = document.createElement('li');
-    canon.className = 'task-data';
-    canon.dataset.id = id;
-    canon.dataset.date = date;
-    canon.dataset.done = 'false';
-    canon.dataset.title = text;
-    canon.dataset.detail = '';
-    dataStore.appendChild(canon);
-
+    fbAdd(date, text);
     input.value = '';
-    renderAll();
   });
 
   document.getElementById('calPrev').addEventListener('click', function(){
     viewMonth--; if(viewMonth < 0){ viewMonth = 11; viewYear--; }
-    renderCalendar(getItems());
+    renderCalendar();
   });
   document.getElementById('calNext').addEventListener('click', function(){
     viewMonth++; if(viewMonth > 11){ viewMonth = 0; viewYear++; }
-    renderCalendar(getItems());
+    renderCalendar();
   });
 
   document.getElementById('footYear').textContent = new Date().getFullYear();
+
+  /* ---------- Auth UI ---------- */
+  var authBtn = document.getElementById('authBtn');
+  var authStatus = document.getElementById('authStatus');
+
+  authBtn.addEventListener('click', function(){
+    if(auth.currentUser){
+      signOut(auth);
+    } else {
+      signInWithPopup(auth, provider).catch(function(e){ console.error(e); });
+    }
+  });
+
+  onAuthStateChanged(auth, function(user){
+    if(user && OWNER_EMAILS.indexOf(user.email) !== -1){
+      isOwner = true;
+      appRoot.classList.add('is-owner');
+      authStatus.textContent = '✏️ ' + user.email + ' (수정 가능)';
+      authStatus.classList.add('owner');
+      authBtn.textContent = '로그아웃';
+    } else if(user){
+      isOwner = false;
+      appRoot.classList.remove('is-owner');
+      authStatus.textContent = user.email + ' (보기 전용)';
+      authStatus.classList.remove('owner');
+      authBtn.textContent = '로그아웃';
+    } else {
+      isOwner = false;
+      appRoot.classList.remove('is-owner');
+      authStatus.textContent = '보기 전용';
+      authStatus.classList.remove('owner');
+      authBtn.textContent = '로그인';
+    }
+    renderAll();
+  });
+
+  /* ---------- Firestore live sync ---------- */
+  onSnapshot(collection(db, 'tasks'), function(snapshot){
+    items = snapshot.docs.map(function(d){
+      var data = d.data();
+      return {
+        id: d.id,
+        date: data.date || '',
+        done: !!data.done,
+        title: data.title || '',
+        detail: data.detail || ''
+      };
+    });
+    renderAll();
+  }, function(err){
+    console.error('Firestore sync error:', err);
+  });
 
   updateClock();
   renderYearCalendar();
