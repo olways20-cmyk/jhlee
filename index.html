@@ -109,6 +109,7 @@
   }
 
   .cal-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; gap:8px; }
+  .cal-head.cal-head-center{ justify-content:center; gap:6px; }
   .cal-title{ font-size:16px; font-weight:700; }
   .cal-nav{
     width:28px; height:28px; border-radius:50%; border:none; background:transparent;
@@ -159,12 +160,21 @@
   .mini-day{
     font-family:"Roboto Mono",monospace; font-size:10.5px; padding:3px 0; border-radius:4px;
     border:none; background:transparent; color:var(--text-secondary); cursor:pointer;
+    position:relative;
   }
   .mini-day:hover{ background:var(--hover); }
   .mini-day.blank{ visibility:hidden; cursor:default; }
   .mini-day.today{ background:var(--accent); color:#fff; font-weight:700; }
   .mini-day.sat:not(.today){ color:var(--blue); }
   .mini-day.sun:not(.today), .mini-day.holiday:not(.today){ color:var(--red); }
+  .mini-day.has-event:not(.today)::after{
+    content:""; position:absolute; bottom:1px; left:50%; transform:translateX(-50%);
+    width:3px; height:3px; border-radius:50%; background:var(--accent);
+  }
+  .mini-day.has-event.today::after{
+    content:""; position:absolute; bottom:1px; left:50%; transform:translateX(-50%);
+    width:3px; height:3px; border-radius:50%; background:#fff;
+  }
 
   .overdue-card{
     background:var(--red-tint); border-color:transparent; margin-bottom:24px;
@@ -341,7 +351,7 @@
       </section>
 
       <section class="card">
-        <div class="cal-head">
+        <div class="cal-head cal-head-center">
           <button type="button" class="cal-nav" id="calPrev" aria-label="이전 달">‹</button>
           <span class="cal-title" id="calTitle">이번 달</span>
           <button type="button" class="cal-nav" id="calNext" aria-label="다음 달">›</button>
@@ -622,6 +632,8 @@ const provider = new GoogleAuthProvider();
     var y = now.getFullYear();
     document.getElementById('yearTitle').textContent = y + '년';
     var todayIso = toISO(now);
+    var byDate = {};
+    items.forEach(function(it){ (byDate[it.date] = byDate[it.date] || []).push(it); });
     var grid = document.getElementById('yearGrid');
     grid.innerHTML = '';
     for(var m=0; m<12; m++){
@@ -650,13 +662,19 @@ const provider = new GoogleAuthProvider();
         btn.type = 'button';
         var cls = 'mini-day';
         if(iso===todayIso) cls += ' today';
+        if(byDate[iso]) cls += ' has-event';
         if(dow===6) cls += ' sat';
         if(dow===0) cls += ' sun';
         if(isHoliday(iso)) cls += ' holiday';
         btn.className = cls;
         btn.textContent = d;
         btn.dataset.date = iso;
-        if(isHoliday(iso)) btn.title = HOLIDAYS[iso];
+        var titleParts = [];
+        if(isHoliday(iso)) titleParts.push(HOLIDAYS[iso]);
+        if(byDate[iso]){
+          byDate[iso].forEach(function(it){ titleParts.push((it.done?'✓ ':'') + (it.title || '(제목 없음)')); });
+        }
+        if(titleParts.length) btn.title = titleParts.join(' · ');
         mgrid.appendChild(btn);
       }
       monthWrap.appendChild(mgrid);
@@ -691,6 +709,7 @@ const provider = new GoogleAuthProvider();
     renderOverdue(monday);
     renderWeek(monday);
     renderCalendar();
+    renderYearCalendar();
     renderModalList();
 
     document.getElementById('weekTitle').textContent =
@@ -824,7 +843,6 @@ const provider = new GoogleAuthProvider();
   });
 
   updateClock();
-  renderYearCalendar();
   renderAll();
   setInterval(updateClock, 10000);
 })();
