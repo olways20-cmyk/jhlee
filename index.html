@@ -536,7 +536,8 @@ function whenGoogleReady(cb){
         summary: item.title || '(제목 없음)',
         description: item.detail || '',
         start: { date: item.date },
-        end: { date: gcalNextDay(item.date) }
+        end: { date: gcalNextDay(item.date) },
+        extendedProperties: { private: { jhleeApp: '1' } } /* 이 앱이 만든 일정임을 표시 (나중에 삭제 감지용) */
       })
     }).then(function(res){ return res.ok ? res.json() : null; })
       .then(function(json){ return json && json.id ? json.id : null; })
@@ -579,6 +580,44 @@ function whenGoogleReady(cb){
           if(eventId) updateDoc(doc(db, 'tasks', it.id), { googleEventId: eventId }).catch(function(e){ console.error(e); });
         });
       }
+    });
+  }
+
+  /* 구글 캘린더(웹/휴대폰 어디서든)에서 직접 "삭제"한 일정을,
+     우리 사이트/Firestore 쪽에서도 자동으로 지워주기 위한 부분.
+     이 앱이 만든 일정에만 붙여둔 표시(jhleeApp=1)를 가진, 지금 살아있는(삭제 안 된)
+     일정 id들을 몽땅 가져와서, 우리 목록에 있는데 그 안에 없는 건 "구글 캘린더에서 지워진 것"으로 보고 같이 지움 */
+  function gcalListActiveIds(){
+    if(!gcalToken) return Promise.resolve(null);
+    var url = 'https://www.googleapis.com/calendar/v3/calendars/primary/events'
+      + '?privateExtendedProperty=' + encodeURIComponent('jhleeApp=1')
+      + '&singleEvents=true&maxResults=2500'
+      + '&timeMin=' + encodeURIComponent('2000-01-01T00:00:00Z')
+      + '&timeMax=' + encodeURIComponent('2100-01-01T00:00:00Z');
+    var ids = {};
+    function fetchPage(pageToken){
+      return fetch(url + (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : ''), {
+        headers: { 'Authorization': 'Bearer ' + gcalToken }
+      }).then(function(res){ return res.ok ? res.json() : null; })
+        .then(function(json){
+          if(!json) return null;
+          (json.items || []).forEach(function(ev){ ids[ev.id] = true; });
+          if(json.nextPageToken) return fetchPage(json.nextPageToken);
+          return ids;
+        });
+    }
+    return fetchPage(null).catch(function(e){ console.error('gcal list error', e); return null; });
+  }
+
+  function pollGcalDeleted(){
+    if(!gcalToken) return;
+    gcalListActiveIds().then(function(ids){
+      if(!ids) return; /* 조회 자체가 실패했으면(네트워크 등) 아무것도 지우지 않고 넘어감 - 안전 우선 */
+      items.forEach(function(it){
+        if(it.googleEventId && !ids[it.googleEventId]){
+          deleteDoc(doc(db, 'tasks', it.id)).catch(function(e){ console.error(e); });
+        }
+      });
     });
   }
 
@@ -942,6 +981,7 @@ function whenGoogleReady(cb){
           gcalBtn.classList.add('connected');
           localStorage.setItem(GCAL_FLAG, '1');
           backfillGcal();
+          pollGcalDeleted();
         } else {
           console.error('gcal token error', tokenResponse);
         }
@@ -952,10 +992,10 @@ function whenGoogleReady(cb){
       }
     });
 
-    /* 자동 재연동: 이 브라우저에서 예전에 연동한 적 있는 owner 계정이라면,
-       클릭 없이 조용히(화면에 아무것도 안 보이게) 다시 연결을 시도함.
+    /* 자동 재연동: 이 브라우저에서 예전에 "캘린더 연동" 버튼을 한 번이라도 눌러 허락한 적 있는
+       owner 계정이라면, 클릭 없이 조용히(화면에 아무것도 안 보이게) 다시 연결을 시도함.
        구글이 이미 허락한 권한을 기억하고 있을 때만 조용히 성공하고,
-       실패해도 그냥 아무 일 없이 넘어가요(수동으로 버튼 누르면 됨) */
+       실패해도 그냥 아무 일 없이 넘어가요(그때만 수동으로 버튼 한 번 눌러주면 됨) */
     var tryAutoReconnect = function(){
       var u = auth.currentUser;
       if(u && OWNER_EMAILS.indexOf(u.email) !== -1 && !gcalToken && localStorage.getItem(GCAL_FLAG) === '1' && gcalTokenClient){
@@ -963,6 +1003,16 @@ function whenGoogleReady(cb){
       }
     };
     onAuthStateChanged(auth, function(){ setTimeout(tryAutoReconnect, 300); });
+
+    /* 접속해 있는 동안 계속 살아있도록 유지:
+       1) 권한 토큰은 보통 1시간 뒤 만료되니, 50분마다 조용히 다시 받아옴
+       2) 혹시 자동 재연동이 한 번 실패했더라도, 2분마다 다시 시도해봄
+       3) 30초마다 "구글 캘린더에서 직접 지운 일정"이 있는지 확인해서 우리 목록에도 반영 */
+    setInterval(function(){
+      if(!gcalToken) tryAutoReconnect();
+      else if(gcalTokenClient) gcalTokenClient.requestAccessToken({ prompt: 'none' });
+    }, 2 * 60 * 1000);
+    setInterval(function(){ pollGcalDeleted(); }, 30 * 1000);
   });
 
   onAuthStateChanged(auth, function(user){
