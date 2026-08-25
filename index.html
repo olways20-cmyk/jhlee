@@ -560,6 +560,20 @@ calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
     return found;
   }
 
+  /* 캘린더 연동이 새로 켜질 때(또는 데이터가 새로 도착할 때), 아직 구글 캘린더로
+     안 넘어간(googleEventId가 없는) 기존 일정들을 한꺼번에 구글 캘린더로 올려줌.
+     이미 올라간 일정은 googleEventId가 있어서 건너뛰기 때문에 여러 번 실행돼도 중복되지 않음 */
+  function backfillGcal(){
+    if(!gcalToken) return;
+    items.forEach(function(it){
+      if(!it.googleEventId){
+        gcalInsert({ date: it.date, title: it.title, detail: it.detail }).then(function(eventId){
+          if(eventId) updateDoc(doc(db, 'tasks', it.id), { googleEventId: eventId }).catch(function(e){ console.error(e); });
+        });
+      }
+    });
+  }
+
   /* ---------- Firestore mutations (owner-only; also enforced server-side by security rules) ---------- */
   function fbAdd(date, title){
     if(!isOwner || !date || !title) return;
@@ -874,6 +888,7 @@ calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
   var authBtn = document.getElementById('authBtn');
   var authStatus = document.getElementById('authStatus');
   var gcalBtn = document.getElementById('gcalBtn');
+  var GCAL_FLAG = 'jhlee_gcal_connected_v1'; /* 이 브라우저에서 예전에 한 번이라도 캘린더 연동을 허락했는지 기억 (localStorage) */
 
   /* 모바일 브라우저에서는 signInWithPopup이 자주 깨지기 때문에(팝업이 새 탭/이상한 화면으로
      열리는 문제) 항상 signInWithRedirect(같은 탭에서 구글 로그인 페이지로 이동했다가 돌아오는 방식)를 씀 */
@@ -888,29 +903,40 @@ calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
     }
   });
 
-  gcalBtn.addEventListener('click', function(){
-    sessionStorage.setItem('gcalReturn', '1');
+  /* mode: 'manual'(사용자가 버튼을 직접 누름) | 'auto'(예전에 연동했던 적이 있어서 자동으로 다시 연결 시도) */
+  function startGcalConnect(mode){
+    sessionStorage.setItem('gcalReturn', mode);
     signInWithRedirect(auth, calProvider);
-  });
+  }
+  gcalBtn.addEventListener('click', function(){ startGcalConnect('manual'); });
 
-  /* 구글 로그인 페이지에서 돌아온 직후 결과 처리 (캘린더 연동 버튼을 눌렀던 경우에만 토큰 저장) */
+  /* 구글 로그인 페이지에서 돌아온 직후 결과 처리 */
   getRedirectResult(auth).then(function(result){
-    if(!result) return;
-    var wasGcalFlow = sessionStorage.getItem('gcalReturn') === '1';
+    var flowMode = sessionStorage.getItem('gcalReturn');
     sessionStorage.removeItem('gcalReturn');
-    if(wasGcalFlow){
+    if(result && (flowMode === 'manual' || flowMode === 'auto')){
       var credential = GoogleAuthProvider.credentialFromResult(result);
       gcalToken = credential && credential.accessToken ? credential.accessToken : null;
       if(gcalToken){
         gcalBtn.textContent = '🗓️ 캘린더 연동됨 ✓';
         gcalBtn.classList.add('connected');
-      } else {
+        localStorage.setItem(GCAL_FLAG, '1');
+        backfillGcal();
+      } else if(flowMode === 'manual'){
         alert('캘린더 연동 권한을 받지 못했어요. 다시 시도해주세요.');
       }
     }
+    /* 자동 재연동: 이 브라우저에서 예전에 연동한 적 있는 owner 계정으로 이미 로그인되어 있는데
+       아직 이번 방문에서는 캘린더 토큰이 없다면 → 클릭 없이 자동으로 다시 연결 시도.
+       (구글이 이미 허락한 권한은 기억하고 있어서, 대부분 화면 깜빡임 없이 순식간에 돌아와요) */
+    var u = auth.currentUser;
+    if(u && OWNER_EMAILS.indexOf(u.email) !== -1 && !gcalToken && localStorage.getItem(GCAL_FLAG) === '1'){
+      startGcalConnect('auto');
+    }
   }).catch(function(e){
     console.error('redirect result error', e);
-    alert('로그인 처리 중 문제가 발생했어요. 다시 시도해주세요.');
+    if(sessionStorage.getItem('gcalReturn') === 'manual') alert('로그인 처리 중 문제가 발생했어요. 다시 시도해주세요.');
+    sessionStorage.removeItem('gcalReturn');
   });
 
   onAuthStateChanged(auth, function(user){
@@ -950,6 +976,7 @@ calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
       };
     });
     renderAll();
+    if(gcalToken) backfillGcal();
   }, function(err){
     console.error('Firestore sync error:', err);
   });
