@@ -71,6 +71,8 @@
     cursor:pointer; transition:border-color .12s ease, color .12s ease;
   }
   .auth-btn:hover{ border-color:var(--accent); color:var(--accent); }
+  #appRoot:not(.is-owner) .gcal-btn{ display:none; }
+  .gcal-btn.connected{ border-color:var(--green); color:var(--green); }
 
   .page{ max-width:1180px; margin:0 auto; padding:12px 20px 140px; }
   .section-title{
@@ -327,6 +329,7 @@
     <span class="mini-head-title">🌿 JH's Desk</span>
     <div class="auth-area">
       <span class="auth-status" id="authStatus">확인 중…</span>
+      <button type="button" class="auth-btn gcal-btn" id="gcalBtn">🗓️ 캘린더 연동</button>
       <button type="button" class="auth-btn" id="authBtn">로그인</button>
     </div>
   </div>
@@ -464,12 +467,17 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 
+/* 구글 캘린더(삼성캘린더 연동용) 별도 권한 요청용 provider */
+const calProvider = new GoogleAuthProvider();
+calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
+
 (function(){
   var WD_KOR = ['일','월','화','수','목','금','토'];
   var appRoot = document.getElementById('appRoot');
   var selectedDate = null;
   var items = [];
   var isOwner = false;
+  var gcalToken = null; /* 구글 캘린더 쓰기 권한 토큰 (연동 버튼을 누른 이 브라우저 세션 동안만 유지) */
 
   /* ---------- Korean public holidays (fixed + lunar-based, looked up per year) ---------- */
   var HOLIDAYS = {
@@ -500,10 +508,61 @@ const provider = new GoogleAuthProvider();
   function toISO(d){ return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()); }
   function esc(s){ var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
+  /* ---------- 구글 캘린더 동기화 (연동 버튼을 눌러 권한을 받은 경우에만 동작) ---------- */
+  function gcalNextDay(iso){
+    var d = new Date(iso+'T00:00:00'); d.setDate(d.getDate()+1); return toISO(d);
+  }
+  function gcalInsert(item){
+    if(!gcalToken) return Promise.resolve(null);
+    return fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + gcalToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        summary: item.title || '(제목 없음)',
+        description: item.detail || '',
+        start: { date: item.date },
+        end: { date: gcalNextDay(item.date) }
+      })
+    }).then(function(res){ return res.ok ? res.json() : null; })
+      .then(function(json){ return json && json.id ? json.id : null; })
+      .catch(function(e){ console.error('gcal insert error', e); return null; });
+  }
+  function gcalPatch(eventId, item){
+    if(!gcalToken || !eventId) return;
+    fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events/' + eventId, {
+      method: 'PATCH',
+      headers: { 'Authorization': 'Bearer ' + gcalToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        summary: item.title || '(제목 없음)',
+        description: item.detail || '',
+        start: { date: item.date },
+        end: { date: gcalNextDay(item.date) }
+      })
+    }).catch(function(e){ console.error('gcal patch error', e); });
+  }
+  function gcalRemove(eventId){
+    if(!gcalToken || !eventId) return;
+    fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events/' + eventId, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + gcalToken }
+    }).catch(function(e){ console.error('gcal delete error', e); });
+  }
+  function findItem(id){
+    var found = null;
+    items.forEach(function(x){ if(x.id === id) found = x; });
+    return found;
+  }
+
   /* ---------- Firestore mutations (owner-only; also enforced server-side by security rules) ---------- */
   function fbAdd(date, title){
     if(!isOwner || !date || !title) return;
-    addDoc(collection(db, 'tasks'), { date: date, title: title, detail: '', done: false }).catch(function(e){ console.error(e); });
+    addDoc(collection(db, 'tasks'), { date: date, title: title, detail: '', done: false }).then(function(ref){
+      if(gcalToken){
+        gcalInsert({ date: date, title: title, detail: '' }).then(function(eventId){
+          if(eventId) updateDoc(ref, { googleEventId: eventId }).catch(function(e){ console.error(e); });
+        });
+      }
+    }).catch(function(e){ console.error(e); });
   }
   function fbToggle(id, done){
     if(!isOwner) return;
@@ -512,11 +571,25 @@ const provider = new GoogleAuthProvider();
   function fbUpdateField(id, field, value){
     if(!isOwner) return;
     var patch = {}; patch[field] = value;
-    updateDoc(doc(db, 'tasks', id), patch).catch(function(e){ console.error(e); });
+    updateDoc(doc(db, 'tasks', id), patch).then(function(){
+      if(gcalToken){
+        var it = findItem(id);
+        if(it && it.googleEventId){
+          gcalPatch(it.googleEventId, {
+            date: it.date,
+            title: field === 'title' ? value : it.title,
+            detail: field === 'detail' ? value : it.detail
+          });
+        }
+      }
+    }).catch(function(e){ console.error(e); });
   }
   function fbDelete(id){
     if(!isOwner) return;
-    deleteDoc(doc(db, 'tasks', id)).catch(function(e){ console.error(e); });
+    var it = findItem(id);
+    deleteDoc(doc(db, 'tasks', id)).then(function(){
+      if(gcalToken && it && it.googleEventId) gcalRemove(it.googleEventId);
+    }).catch(function(e){ console.error(e); });
   }
 
   function itemHtml(item, ctx, prefixHtml){
@@ -793,13 +866,33 @@ const provider = new GoogleAuthProvider();
   /* ---------- Auth UI ---------- */
   var authBtn = document.getElementById('authBtn');
   var authStatus = document.getElementById('authStatus');
+  var gcalBtn = document.getElementById('gcalBtn');
 
   authBtn.addEventListener('click', function(){
     if(auth.currentUser){
       signOut(auth);
+      gcalToken = null;
+      gcalBtn.textContent = '🗓️ 캘린더 연동';
+      gcalBtn.classList.remove('connected');
     } else {
       signInWithPopup(auth, provider).catch(function(e){ console.error(e); });
     }
+  });
+
+  gcalBtn.addEventListener('click', function(){
+    signInWithPopup(auth, calProvider).then(function(result){
+      var credential = GoogleAuthProvider.credentialFromResult(result);
+      gcalToken = credential && credential.accessToken ? credential.accessToken : null;
+      if(gcalToken){
+        gcalBtn.textContent = '🗓️ 캘린더 연동됨 ✓';
+        gcalBtn.classList.add('connected');
+      } else {
+        alert('캘린더 연동 권한을 받지 못했어요. 다시 시도해주세요.');
+      }
+    }).catch(function(e){
+      console.error(e);
+      alert('캘린더 연동에 실패했어요. 다시 시도해주세요.');
+    });
   });
 
   onAuthStateChanged(auth, function(user){
@@ -834,7 +927,8 @@ const provider = new GoogleAuthProvider();
         date: data.date || '',
         done: !!data.done,
         title: data.title || '',
-        detail: data.detail || ''
+        detail: data.detail || '',
+        googleEventId: data.googleEventId || null
       };
     });
     renderAll();
