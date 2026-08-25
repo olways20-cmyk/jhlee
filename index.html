@@ -14,6 +14,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root{
     --bg:#FFFFFF;
@@ -337,7 +338,8 @@
     <div class="auth-area">
       <span class="auth-status" id="authStatus">확인 중…</span>
       <button type="button" class="auth-btn gcal-btn" id="gcalBtn">🗓️ 캘린더 연동</button>
-      <button type="button" class="auth-btn" id="authBtn">로그인</button>
+      <button type="button" class="auth-btn" id="signOutBtn" style="display:none;">로그아웃</button>
+      <div id="googleSignInBtn"></div>
     </div>
   </div>
 
@@ -453,7 +455,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
-  getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged
+  getAuth, GoogleAuthProvider, signInWithCredential, signOut, onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot
@@ -468,15 +470,21 @@ const firebaseConfig = {
   appId: "1:900457866004:web:4b527c9b3fad6fe7ee9801"
 };
 const OWNER_EMAILS = ["olways20@gmail.com", "cjh8858@gmail.com"];
+/* 구글 클라우드 콘솔에서 가져온 웹 클라이언트 ID (공개되어도 안전한 값) */
+const GOOGLE_CLIENT_ID = "900457866004-vrhpol09sdlqc844pc2qtoq1us0tjs83.apps.googleusercontent.com";
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const provider = new GoogleAuthProvider();
 
-/* 구글 캘린더(삼성캘린더 연동용) 별도 권한 요청용 provider */
-const calProvider = new GoogleAuthProvider();
-calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
+/* Firebase의 signInWithRedirect/signInWithPopup은 크롬의 "제3자 저장공간 차단" 정책 때문에
+   github.io ↔ firebaseapp.com 사이 통신이 막혀서 로그인이 안 되는 문제가 있었음.
+   그래서 구글의 최신 로그인 방식(Google Identity Services)을 직접 써서, 다른 사이트를
+   거치지 않고 바로 로그인하도록 바꿈 */
+function whenGoogleReady(cb){
+  if(window.google && window.google.accounts && window.google.accounts.id && window.google.accounts.oauth2) return cb();
+  setTimeout(function(){ whenGoogleReady(cb); }, 50);
+}
 
 (function(){
   var WD_KOR = ['일','월','화','수','목','금','토'];
@@ -884,59 +892,77 @@ calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
 
   document.getElementById('footYear').textContent = new Date().getFullYear();
 
-  /* ---------- Auth UI ---------- */
-  var authBtn = document.getElementById('authBtn');
+  /* ---------- Auth UI (Google Identity Services 직접 사용) ---------- */
   var authStatus = document.getElementById('authStatus');
   var gcalBtn = document.getElementById('gcalBtn');
+  var signOutBtn = document.getElementById('signOutBtn');
+  var googleSignInBtnEl = document.getElementById('googleSignInBtn');
   var GCAL_FLAG = 'jhlee_gcal_connected_v1'; /* 이 브라우저에서 예전에 한 번이라도 캘린더 연동을 허락했는지 기억 (localStorage) */
+  var gcalTokenClient = null;
 
-  /* 모바일 브라우저에서는 signInWithPopup이 자주 깨지기 때문에(팝업이 새 탭/이상한 화면으로
-     열리는 문제) 항상 signInWithRedirect(같은 탭에서 구글 로그인 페이지로 이동했다가 돌아오는 방식)를 씀 */
-  authBtn.addEventListener('click', function(){
-    if(auth.currentUser){
-      signOut(auth);
-      gcalToken = null;
-      gcalBtn.textContent = '🗓️ 캘린더 연동';
-      gcalBtn.classList.remove('connected');
-    } else {
-      signInWithRedirect(auth, provider);
-    }
+  /* 구글 로그인 버튼(ID 토큰 방식)에서 로그인 결과가 오면 Firebase에도 로그인시킴 */
+  function handleCredentialResponse(response){
+    var cred = GoogleAuthProvider.credential(response.credential);
+    signInWithCredential(auth, cred).catch(function(e){
+      console.error('firebase signIn error', e);
+      alert('로그인에 실패했어요. 다시 시도해주세요.');
+    });
+  }
+
+  signOutBtn.addEventListener('click', function(){
+    signOut(auth);
+    gcalToken = null;
+    gcalBtn.textContent = '🗓️ 캘린더 연동';
+    gcalBtn.classList.remove('connected');
+    if(window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
   });
 
-  /* mode: 'manual'(사용자가 버튼을 직접 누름) | 'auto'(예전에 연동했던 적이 있어서 자동으로 다시 연결 시도) */
-  function startGcalConnect(mode){
-    sessionStorage.setItem('gcalReturn', mode);
-    signInWithRedirect(auth, calProvider);
-  }
-  gcalBtn.addEventListener('click', function(){ startGcalConnect('manual'); });
+  gcalBtn.addEventListener('click', function(){
+    if(!gcalTokenClient){ alert('아직 준비 중이에요. 잠시 후 다시 눌러주세요.'); return; }
+    gcalTokenClient.requestAccessToken();
+  });
 
-  /* 구글 로그인 페이지에서 돌아온 직후 결과 처리 */
-  getRedirectResult(auth).then(function(result){
-    var flowMode = sessionStorage.getItem('gcalReturn');
-    sessionStorage.removeItem('gcalReturn');
-    if(result && (flowMode === 'manual' || flowMode === 'auto')){
-      var credential = GoogleAuthProvider.credentialFromResult(result);
-      gcalToken = credential && credential.accessToken ? credential.accessToken : null;
-      if(gcalToken){
-        gcalBtn.textContent = '🗓️ 캘린더 연동됨 ✓';
-        gcalBtn.classList.add('connected');
-        localStorage.setItem(GCAL_FLAG, '1');
-        backfillGcal();
-      } else if(flowMode === 'manual'){
-        alert('캘린더 연동 권한을 받지 못했어요. 다시 시도해주세요.');
+  whenGoogleReady(function(){
+    google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: handleCredentialResponse,
+      auto_select: false
+    });
+    google.accounts.id.renderButton(googleSignInBtnEl, {
+      type: 'standard', theme: 'outline', size: 'medium', shape: 'pill', text: 'signin_with', locale: 'ko'
+    });
+
+    gcalTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: 'https://www.googleapis.com/auth/calendar.events',
+      callback: function(tokenResponse){
+        if(tokenResponse && tokenResponse.access_token){
+          gcalToken = tokenResponse.access_token;
+          gcalBtn.textContent = '🗓️ 캘린더 연동됨 ✓';
+          gcalBtn.classList.add('connected');
+          localStorage.setItem(GCAL_FLAG, '1');
+          backfillGcal();
+        } else {
+          console.error('gcal token error', tokenResponse);
+        }
+      },
+      error_callback: function(err){
+        console.error('gcal token client error', err);
+        if(err && err.type !== 'popup_closed') alert('캘린더 연동에 실패했어요. 다시 시도해주세요.');
       }
-    }
-    /* 자동 재연동: 이 브라우저에서 예전에 연동한 적 있는 owner 계정으로 이미 로그인되어 있는데
-       아직 이번 방문에서는 캘린더 토큰이 없다면 → 클릭 없이 자동으로 다시 연결 시도.
-       (구글이 이미 허락한 권한은 기억하고 있어서, 대부분 화면 깜빡임 없이 순식간에 돌아와요) */
-    var u = auth.currentUser;
-    if(u && OWNER_EMAILS.indexOf(u.email) !== -1 && !gcalToken && localStorage.getItem(GCAL_FLAG) === '1'){
-      startGcalConnect('auto');
-    }
-  }).catch(function(e){
-    console.error('redirect result error', e);
-    if(sessionStorage.getItem('gcalReturn') === 'manual') alert('로그인 처리 중 문제가 발생했어요. 다시 시도해주세요.');
-    sessionStorage.removeItem('gcalReturn');
+    });
+
+    /* 자동 재연동: 이 브라우저에서 예전에 연동한 적 있는 owner 계정이라면,
+       클릭 없이 조용히(화면에 아무것도 안 보이게) 다시 연결을 시도함.
+       구글이 이미 허락한 권한을 기억하고 있을 때만 조용히 성공하고,
+       실패해도 그냥 아무 일 없이 넘어가요(수동으로 버튼 누르면 됨) */
+    var tryAutoReconnect = function(){
+      var u = auth.currentUser;
+      if(u && OWNER_EMAILS.indexOf(u.email) !== -1 && !gcalToken && localStorage.getItem(GCAL_FLAG) === '1' && gcalTokenClient){
+        gcalTokenClient.requestAccessToken({ prompt: 'none' });
+      }
+    };
+    onAuthStateChanged(auth, function(){ setTimeout(tryAutoReconnect, 300); });
   });
 
   onAuthStateChanged(auth, function(user){
@@ -945,20 +971,19 @@ calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
       appRoot.classList.add('is-owner');
       authStatus.textContent = '✏️ ' + user.email + ' (수정 가능)';
       authStatus.classList.add('owner');
-      authBtn.textContent = '로그아웃';
     } else if(user){
       isOwner = false;
       appRoot.classList.remove('is-owner');
       authStatus.textContent = user.email + ' (보기 전용)';
       authStatus.classList.remove('owner');
-      authBtn.textContent = '로그아웃';
     } else {
       isOwner = false;
       appRoot.classList.remove('is-owner');
       authStatus.textContent = '보기 전용';
       authStatus.classList.remove('owner');
-      authBtn.textContent = '로그인';
     }
+    googleSignInBtnEl.style.display = user ? 'none' : '';
+    signOutBtn.style.display = user ? '' : 'none';
     renderAll();
   });
 
