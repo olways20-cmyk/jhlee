@@ -569,18 +569,28 @@ function whenGoogleReady(cb){
     return found;
   }
 
+  /* 같은 일정이 구글 캘린더에 2개씩 생기는 문제 방지용 잠금장치.
+     일정을 하나 추가하면 (1) fbAdd에서 바로 올리는 시도와 (2) 그 직후 Firestore가
+     "새 일정 생겼다"고 알려줘서 실행되는 backfillGcal의 시도가 아주 짧은 순간
+     동시에 일어날 수 있어서, 아직 googleEventId가 안 붙은 같은 일정을 두 번 올리는
+     일이 있었음. 이제는 "지금 올리는 중"인 일정 id를 기억해뒀다가, 이미 처리 중이면
+     건너뛰도록 해서 항상 한 번만 올라가게 함 */
+  var gcalPendingIds = {};
+  function gcalInsertOnce(it){
+    if(!gcalToken || it.googleEventId || gcalPendingIds[it.id]) return;
+    gcalPendingIds[it.id] = true;
+    gcalInsert({ date: it.date, title: it.title, detail: it.detail }).then(function(eventId){
+      delete gcalPendingIds[it.id];
+      if(eventId) updateDoc(doc(db, 'tasks', it.id), { googleEventId: eventId }).catch(function(e){ console.error(e); });
+    });
+  }
+
   /* 캘린더 연동이 새로 켜질 때(또는 데이터가 새로 도착할 때), 아직 구글 캘린더로
      안 넘어간(googleEventId가 없는) 기존 일정들을 한꺼번에 구글 캘린더로 올려줌.
      이미 올라간 일정은 googleEventId가 있어서 건너뛰기 때문에 여러 번 실행돼도 중복되지 않음 */
   function backfillGcal(){
     if(!gcalToken) return;
-    items.forEach(function(it){
-      if(!it.googleEventId){
-        gcalInsert({ date: it.date, title: it.title, detail: it.detail }).then(function(eventId){
-          if(eventId) updateDoc(doc(db, 'tasks', it.id), { googleEventId: eventId }).catch(function(e){ console.error(e); });
-        });
-      }
-    });
+    items.forEach(function(it){ gcalInsertOnce(it); });
   }
 
   /* 구글 캘린더(웹/휴대폰 어디서든)에서 직접 "삭제"한 일정을,
@@ -625,11 +635,7 @@ function whenGoogleReady(cb){
   function fbAdd(date, title){
     if(!isOwner || !date || !title) return;
     addDoc(collection(db, 'tasks'), { date: date, title: title, detail: '', done: false }).then(function(ref){
-      if(gcalToken){
-        gcalInsert({ date: date, title: title, detail: '' }).then(function(eventId){
-          if(eventId) updateDoc(ref, { googleEventId: eventId }).catch(function(e){ console.error(e); });
-        });
-      }
+      if(gcalToken) gcalInsertOnce({ id: ref.id, date: date, title: title, detail: '', googleEventId: null });
     }).catch(function(e){ console.error(e); });
   }
   function fbToggle(id, done){
@@ -956,8 +962,18 @@ function whenGoogleReady(cb){
     if(window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
   });
 
+  /* gcalSilent가 true면 지금 요청은 "화면 뒤에서 조용히" 시도하는 자동 재연결이라는 뜻.
+     이때는 실패해도 절대 팝업(alert)을 띄우지 않음 - 버튼을 직접 눌렀을 때만 실패 팝업을 보여줌 */
+  var gcalSilent = false;
+  function gcalRequestSilently(){
+    if(!gcalTokenClient) return;
+    gcalSilent = true;
+    gcalTokenClient.requestAccessToken({ prompt: 'none' });
+  }
+
   gcalBtn.addEventListener('click', function(){
     if(!gcalTokenClient){ alert('아직 준비 중이에요. 잠시 후 다시 눌러주세요.'); return; }
+    gcalSilent = false;
     gcalTokenClient.requestAccessToken();
   });
 
@@ -975,6 +991,7 @@ function whenGoogleReady(cb){
       client_id: GOOGLE_CLIENT_ID,
       scope: 'https://www.googleapis.com/auth/calendar.events',
       callback: function(tokenResponse){
+        gcalSilent = false;
         if(tokenResponse && tokenResponse.access_token){
           gcalToken = tokenResponse.access_token;
           gcalBtn.textContent = '🗓️ 캘린더 연동됨 ✓';
@@ -988,7 +1005,8 @@ function whenGoogleReady(cb){
       },
       error_callback: function(err){
         console.error('gcal token client error', err);
-        if(err && err.type !== 'popup_closed') alert('캘린더 연동에 실패했어요. 다시 시도해주세요.');
+        if(!gcalSilent && err && err.type !== 'popup_closed') alert('캘린더 연동에 실패했어요. 다시 시도해주세요.');
+        gcalSilent = false;
       }
     });
 
@@ -999,7 +1017,7 @@ function whenGoogleReady(cb){
     var tryAutoReconnect = function(){
       var u = auth.currentUser;
       if(u && OWNER_EMAILS.indexOf(u.email) !== -1 && !gcalToken && localStorage.getItem(GCAL_FLAG) === '1' && gcalTokenClient){
-        gcalTokenClient.requestAccessToken({ prompt: 'none' });
+        gcalRequestSilently();
       }
     };
     onAuthStateChanged(auth, function(){ setTimeout(tryAutoReconnect, 300); });
@@ -1010,7 +1028,7 @@ function whenGoogleReady(cb){
        3) 30초마다 "구글 캘린더에서 직접 지운 일정"이 있는지 확인해서 우리 목록에도 반영 */
     setInterval(function(){
       if(!gcalToken) tryAutoReconnect();
-      else if(gcalTokenClient) gcalTokenClient.requestAccessToken({ prompt: 'none' });
+      else gcalRequestSilently();
     }, 2 * 60 * 1000);
     setInterval(function(){ pollGcalDeleted(); }, 30 * 1000);
   });
