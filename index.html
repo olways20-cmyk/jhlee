@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>JH's Desk</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#34A853">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="JH's Desk">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap">
@@ -446,7 +453,7 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
-  getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged
+  getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot
@@ -868,6 +875,8 @@ calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
   var authStatus = document.getElementById('authStatus');
   var gcalBtn = document.getElementById('gcalBtn');
 
+  /* 모바일 브라우저에서는 signInWithPopup이 자주 깨지기 때문에(팝업이 새 탭/이상한 화면으로
+     열리는 문제) 항상 signInWithRedirect(같은 탭에서 구글 로그인 페이지로 이동했다가 돌아오는 방식)를 씀 */
   authBtn.addEventListener('click', function(){
     if(auth.currentUser){
       signOut(auth);
@@ -875,12 +884,21 @@ calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
       gcalBtn.textContent = '🗓️ 캘린더 연동';
       gcalBtn.classList.remove('connected');
     } else {
-      signInWithPopup(auth, provider).catch(function(e){ console.error(e); });
+      signInWithRedirect(auth, provider);
     }
   });
 
   gcalBtn.addEventListener('click', function(){
-    signInWithPopup(auth, calProvider).then(function(result){
+    sessionStorage.setItem('gcalReturn', '1');
+    signInWithRedirect(auth, calProvider);
+  });
+
+  /* 구글 로그인 페이지에서 돌아온 직후 결과 처리 (캘린더 연동 버튼을 눌렀던 경우에만 토큰 저장) */
+  getRedirectResult(auth).then(function(result){
+    if(!result) return;
+    var wasGcalFlow = sessionStorage.getItem('gcalReturn') === '1';
+    sessionStorage.removeItem('gcalReturn');
+    if(wasGcalFlow){
       var credential = GoogleAuthProvider.credentialFromResult(result);
       gcalToken = credential && credential.accessToken ? credential.accessToken : null;
       if(gcalToken){
@@ -889,10 +907,10 @@ calProvider.addScope('https://www.googleapis.com/auth/calendar.events');
       } else {
         alert('캘린더 연동 권한을 받지 못했어요. 다시 시도해주세요.');
       }
-    }).catch(function(e){
-      console.error(e);
-      alert('캘린더 연동에 실패했어요. 다시 시도해주세요.');
-    });
+    }
+  }).catch(function(e){
+    console.error('redirect result error', e);
+    alert('로그인 처리 중 문제가 발생했어요. 다시 시도해주세요.');
   });
 
   onAuthStateChanged(auth, function(user){
