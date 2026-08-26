@@ -458,7 +458,7 @@ import {
   getAuth, GoogleAuthProvider, signInWithCredential, signOut, onAuthStateChanged
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot
+  getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot, runTransaction
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -569,19 +569,39 @@ function whenGoogleReady(cb){
     return found;
   }
 
-  /* 같은 일정이 구글 캘린더에 2개씩 생기는 문제 방지용 잠금장치.
-     일정을 하나 추가하면 (1) fbAdd에서 바로 올리는 시도와 (2) 그 직후 Firestore가
-     "새 일정 생겼다"고 알려줘서 실행되는 backfillGcal의 시도가 아주 짧은 순간
-     동시에 일어날 수 있어서, 아직 googleEventId가 안 붙은 같은 일정을 두 번 올리는
-     일이 있었음. 이제는 "지금 올리는 중"인 일정 id를 기억해뒀다가, 이미 처리 중이면
-     건너뛰도록 해서 항상 한 번만 올라가게 함 */
+  /* 같은 일정이 구글 캘린더에 2~3개씩 생기던 진짜 원인:
+     노트북과 휴대폰(등 여러 브라우저)이 동시에 캘린더 연동 상태일 때, 새 일정 하나가
+     생기면 "각자의 브라우저"가 전부 다 "어? 이 일정은 아직 구글캘린더에 없네" 하고
+     동시에 각자 올려버렸음. 예전에 만든 "이미 처리 중" 표시는 한 브라우저 안에서만
+     기억되는 거라서, 브라우저가 여러 개면 소용이 없었음.
+     이제는 Firestore의 "트랜잭션"을 이용해서, 여러 브라우저가 동시에 시도해도 딱 한 브라우저만
+     "내가 이 일정을 올릴게"라고 도장을 찍을 수 있게 만들었음(구글 서버가 순서를 정리해줌).
+     도장을 이미 누가 찍었으면(2분 이내) 나머지는 전부 조용히 포기함 */
   var gcalPendingIds = {};
+  function claimGcalInsert(itemId){
+    var ref = doc(db, 'tasks', itemId);
+    return runTransaction(db, function(tx){
+      return tx.get(ref).then(function(snap){
+        if(!snap.exists()) return false;
+        var data = snap.data();
+        if(data.googleEventId) return false; /* 이미 올라간 일정 */
+        var claimedAt = data.gcalClaimedAt || 0;
+        if(claimedAt && (Date.now() - claimedAt) < 2 * 60 * 1000) return false; /* 다른 브라우저가 방금 도장 찍음 */
+        tx.set(ref, { gcalClaimedAt: Date.now() }, { merge: true });
+        return true;
+      });
+    }).catch(function(e){ console.error('gcal claim error', e); return false; });
+  }
   function gcalInsertOnce(it){
     if(!gcalToken || it.googleEventId || gcalPendingIds[it.id]) return;
     gcalPendingIds[it.id] = true;
-    gcalInsert({ date: it.date, title: it.title, detail: it.detail }).then(function(eventId){
-      delete gcalPendingIds[it.id];
-      if(eventId) updateDoc(doc(db, 'tasks', it.id), { googleEventId: eventId }).catch(function(e){ console.error(e); });
+    claimGcalInsert(it.id).then(function(won){
+      if(!won){ delete gcalPendingIds[it.id]; return; }
+      gcalInsert({ date: it.date, title: it.title, detail: it.detail }).then(function(eventId){
+        delete gcalPendingIds[it.id];
+        var patch = eventId ? { googleEventId: eventId } : { gcalClaimedAt: null };
+        updateDoc(doc(db, 'tasks', it.id), patch).catch(function(e){ console.error(e); });
+      });
     });
   }
 
@@ -965,8 +985,18 @@ function whenGoogleReady(cb){
   /* gcalSilent가 true면 지금 요청은 "화면 뒤에서 조용히" 시도하는 자동 재연결이라는 뜻.
      이때는 실패해도 절대 팝업(alert)을 띄우지 않음 - 버튼을 직접 눌렀을 때만 실패 팝업을 보여줌 */
   var gcalSilent = false;
+
+  /* 인터넷이 안 될 때(또는 화면이 안 보일 때) 자동 재연결을 시도하면, 휴대폰에서
+     구글 로그인 화면(accounts.google.com)으로 넘어갔다가 인터넷이 없어서
+     "인터넷에 연결할 수 없음" 화면만 뜨고 멈춰버리는 문제가 있었음.
+     그래서 인터넷이 켜져 있고 화면이 실제로 보이고 있을 때만 자동 재연결을 시도하도록 함 */
+  function canTrySilentGcal(){
+    if(typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+    if(typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
+    return true;
+  }
   function gcalRequestSilently(){
-    if(!gcalTokenClient) return;
+    if(!gcalTokenClient || !canTrySilentGcal()) return;
     gcalSilent = true;
     gcalTokenClient.requestAccessToken({ prompt: 'none' });
   }
@@ -1031,6 +1061,9 @@ function whenGoogleReady(cb){
       else gcalRequestSilently();
     }, 2 * 60 * 1000);
     setInterval(function(){ pollGcalDeleted(); }, 30 * 1000);
+
+    /* 인터넷이 끊겼다가 다시 연결되는 순간, 굳이 2분을 기다리지 않고 바로 한 번 재연결 시도 */
+    window.addEventListener('online', function(){ if(!gcalToken) tryAutoReconnect(); });
   });
 
   onAuthStateChanged(auth, function(user){
