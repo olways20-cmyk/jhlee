@@ -147,6 +147,11 @@
     content:""; position:absolute; bottom:5px; left:50%; transform:translateX(-50%);
     width:5px; height:5px; border-radius:50%; background:var(--event-dot);
   }
+  /* 생일만 있는 날짜는 숫자는 그대로 두고(안 굵게), 점 색깔만 파란색으로 */
+  .cal-day.has-birthday::after{
+    content:""; position:absolute; bottom:5px; left:50%; transform:translateX(-50%);
+    width:5px; height:5px; border-radius:50%; background:var(--blue);
+  }
   .cal-day[data-preview]:hover::before{
     content:attr(data-preview);
     position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%);
@@ -180,6 +185,11 @@
   .mini-day.has-event::after{
     content:""; position:absolute; bottom:1px; left:50%; transform:translateX(-50%);
     width:3px; height:3px; border-radius:50%; background:var(--event-dot);
+  }
+  /* 생일만 있는 날짜는 숫자는 그대로 두고(안 굵게), 점 색깔만 파란색으로 */
+  .mini-day.has-birthday::after{
+    content:""; position:absolute; bottom:1px; left:50%; transform:translateX(-50%);
+    width:3px; height:3px; border-radius:50%; background:var(--blue);
   }
 
   .overdue-card{
@@ -518,6 +528,8 @@ function whenGoogleReady(cb){
   function pad(n){ return String(n).padStart(2,'0'); }
   function toISO(d){ return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()); }
   function esc(s){ var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+  /* 제목에 "생일"이 들어있으면 생일 일정으로 봄(따로 만든 항목이 없어서 제목으로 구분) */
+  function isBirthdayItem(it){ return !!(it && it.title && it.title.indexOf('생일') !== -1); }
 
   /* ---------- 구글 캘린더 동기화 (연동 버튼을 눌러 권한을 받은 경우에만 동작) ---------- */
   function gcalNextDay(iso){
@@ -773,7 +785,10 @@ function whenGoogleReady(cb){
       cell.type = 'button';
       var cls = 'cal-day';
       if(iso===todayIso) cls += ' today';
-      if(byDate[iso]) cls += ' has-event';
+      if(byDate[iso]){
+        var hasOther = byDate[iso].some(function(it){ return !isBirthdayItem(it); });
+        cls += hasOther ? ' has-event' : ' has-birthday';
+      }
       if(dow===6) cls += ' sat';
       if(dow===0) cls += ' sun';
       if(isHoliday(iso)) cls += ' holiday';
@@ -825,7 +840,10 @@ function whenGoogleReady(cb){
         btn.type = 'button';
         var cls = 'mini-day';
         if(iso===todayIso) cls += ' today';
-        if(byDate[iso]) cls += ' has-event';
+        if(byDate[iso]){
+          var hasOther = byDate[iso].some(function(it){ return !isBirthdayItem(it); });
+          cls += hasOther ? ' has-event' : ' has-birthday';
+        }
         if(dow===6) cls += ' sat';
         if(dow===0) cls += ' sun';
         if(isHoliday(iso)) cls += ' holiday';
