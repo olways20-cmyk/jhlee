@@ -72,6 +72,31 @@
   .mini-head-title{
     font-size:14px; font-weight:700; color:var(--text-secondary); letter-spacing:.01em;
   }
+  .search-area{ position:relative; display:flex; align-items:center; gap:6px; flex:1; max-width:280px; min-width:140px; }
+  .search-input{
+    width:100%; padding:7px 12px; border-radius:14px; border:1px solid var(--border);
+    background:var(--surface); color:var(--text); outline:none;
+  }
+  .search-input:focus{ border-color:var(--accent); }
+  .search-btn{
+    padding:6px 10px; border-radius:14px; border:1px solid var(--border);
+    background:transparent; color:var(--text-secondary); cursor:pointer; flex:none;
+  }
+  .search-btn:hover{ border-color:var(--accent); color:var(--accent); }
+  .search-results{
+    display:none; position:absolute; top:calc(100% + 6px); left:0; right:0;
+    background:var(--surface-raised); border:1px solid var(--border); border-radius:10px;
+    box-shadow:var(--shadow-hover); max-height:260px; overflow-y:auto; z-index:40;
+  }
+  .search-results.open{ display:block; }
+  .search-result-item{
+    display:block; width:100%; text-align:left; padding:9px 12px; border:none; background:transparent;
+    color:var(--text); cursor:pointer; font-size:13px; border-bottom:1px solid var(--border-soft);
+  }
+  .search-result-item:last-child{ border-bottom:none; }
+  .search-result-item:hover{ background:var(--hover); }
+  .search-result-date{ color:var(--accent); font-weight:600; margin-right:6px; }
+  .search-result-empty{ padding:12px; font-size:13px; color:var(--text-faint); text-align:center; }
   .auth-area{ display:flex; align-items:center; gap:10px; }
   .auth-status{ font-size:12px; color:var(--text-secondary); }
   .auth-status.owner{ color:var(--green); font-weight:600; }
@@ -341,6 +366,11 @@
 
   <div class="mini-head">
     <span class="mini-head-title">🌿 JH's Desk</span>
+    <div class="search-area">
+      <input type="text" id="searchInput" class="search-input" placeholder="일정 검색" autocomplete="off">
+      <button type="button" class="search-btn" id="searchBtn" aria-label="검색">🔍</button>
+      <div class="search-results" id="searchResults"></div>
+    </div>
     <div class="auth-area">
       <span class="auth-status" id="authStatus">확인 중…</span>
       <button type="button" class="auth-btn gcal-btn" id="gcalBtn">🗓️ 캘린더 연동</button>
@@ -735,7 +765,7 @@ function whenGoogleReady(cb){
 
   function renderOverdue(monday){
     var mondayIso = toISO(monday);
-    var overdue = items.filter(function(it){ return it.date < mondayIso && !it.done; });
+    var overdue = items.filter(function(it){ return it.date < mondayIso && !it.done && !isBirthdayItem(it); });
     var bar = document.getElementById('overdueBar');
     if(!overdue.length){ bar.style.display = 'none'; document.getElementById('overdueList').innerHTML=''; return; }
     bar.style.display = 'block';
@@ -958,6 +988,57 @@ function whenGoogleReady(cb){
     if(!date) return;
     fbAdd(date, text);
     input.value = '';
+  });
+
+  /* ---------- 일정 검색 ---------- */
+  var searchInput = document.getElementById('searchInput');
+  var searchBtn = document.getElementById('searchBtn');
+  var searchResults = document.getElementById('searchResults');
+
+  function closeSearchResults(){
+    searchResults.classList.remove('open');
+    searchResults.innerHTML = '';
+  }
+  function jumpToDate(iso){
+    var d = new Date(iso+'T00:00:00');
+    viewYear = d.getFullYear(); viewMonth = d.getMonth();
+    renderCalendar();
+    openDayModal(iso);
+    closeSearchResults();
+  }
+  function runSearch(){
+    var q = (searchInput.value || '').trim().toLowerCase();
+    if(!q){ closeSearchResults(); return; }
+    var matches = items.filter(function(it){
+      return (it.title || '').toLowerCase().indexOf(q) !== -1 || (it.detail || '').toLowerCase().indexOf(q) !== -1;
+    }).sort(function(a,b){ return a.date < b.date ? -1 : 1; });
+
+    if(!matches.length){
+      searchResults.innerHTML = '<div class="search-result-empty">검색 결과가 없어요</div>';
+      searchResults.classList.add('open');
+      return;
+    }
+    if(matches.length === 1){
+      jumpToDate(matches[0].date);
+      return;
+    }
+    searchResults.innerHTML = matches.map(function(it){
+      var d = new Date(it.date+'T00:00:00');
+      var dateLabel = (d.getMonth()+1)+'월 '+d.getDate()+'일('+WD_KOR[d.getDay()]+')';
+      return '<button type="button" class="search-result-item" data-date="'+it.date+'">'
+        + '<span class="search-result-date">'+dateLabel+'</span>' + esc(it.title || '(제목 없음)')
+        + '</button>';
+    }).join('');
+    searchResults.classList.add('open');
+  }
+  searchBtn.addEventListener('click', runSearch);
+  searchInput.addEventListener('keydown', function(e){ if(e.key === 'Enter') runSearch(); });
+  searchResults.addEventListener('click', function(e){
+    var btn = e.target.closest('.search-result-item');
+    if(btn && btn.dataset.date) jumpToDate(btn.dataset.date);
+  });
+  document.addEventListener('click', function(e){
+    if(!e.target.closest('.search-area')) closeSearchResults();
   });
 
   document.getElementById('calPrev').addEventListener('click', function(){
